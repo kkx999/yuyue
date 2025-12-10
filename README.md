@@ -98,4 +98,4 @@ A: 这是权限问题。请将网站根目录的权限设置为 `777` (Linux/宝
 
 ## 📄 开源协议
 
-本项目采用 [MIT License](LICENSE) 开源协议。您可以免费用于个人或商业项目。
+本项目采用 [MIT License](https://github.com/kkx999/reserve/blob/main/LICENSE.txt) 开源协议。您可以免费用于个人或商业项目。
