@@ -1,6 +1,9 @@
 <?php
 session_start();
+// 检查是否登录
 if (!isset($_SESSION['is_admin'])) { header("Location: login.php"); exit; }
+
+// 引入上一级目录的 config.php
 require '../config.php';
 
 // ==================================================
@@ -15,12 +18,12 @@ try {
     }
 } catch (Exception $e) {}
 
-$sys_msg = '';
-$current_month = isset($_GET['month']) ? $_GET['month'] : date('Y-m');
+// ==================================================
+// 2. 核心逻辑处理 (修复跳转 404 问题)
+// ==================================================
 
-// ==================================================
-// 2. 核心逻辑处理
-// ==================================================
+// 获取当前脚本的文件名，用于自动跳转
+$current_page = $_SERVER['PHP_SELF'];
 
 // A. 修改管理员账号密码
 if (isset($_POST['update_account'])) {
@@ -35,17 +38,19 @@ if (isset($_POST['update_account'])) {
         $new_hash = password_hash($new_pass, PASSWORD_DEFAULT);
         $update = $conn->prepare("UPDATE admins SET username = ?, password = ? WHERE id = ?");
         if ($update->execute([$new_user, $new_hash, $admin['id']])) {
-            $sys_msg = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 账号修改成功！下次登录请使用新密码。</div>";
+            $_SESSION['sys_msg'] = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 账号修改成功！下次登录请使用新密码。</div>";
         } else {
-            $sys_msg = "<div class='toast error'><span class='material-symbols-outlined'>error</span> 数据库更新失败。</div>";
+            $_SESSION['sys_msg'] = "<div class='toast error'><span class='material-symbols-outlined'>error</span> 数据库更新失败。</div>";
         }
     } else {
-        $sys_msg = "<div class='toast error'><span class='material-symbols-outlined'>block</span> 旧密码错误，拒绝操作。</div>";
+        $_SESSION['sys_msg'] = "<div class='toast error'><span class='material-symbols-outlined'>block</span> 旧密码错误，拒绝操作。</div>";
     }
+    header("Location: " . $current_page); exit;
 }
 
 // B. 保存公告 & TG 配置
 if (isset($_POST['save_notice'])) {
+    // 1. 保存设置
     $status = isset($_POST['notice_status']) ? '1' : '0';
     $conn->prepare("INSERT INTO settings (name, value) VALUES ('notice_status', ?) ON DUPLICATE KEY UPDATE value = ?")->execute([$status, $status]);
     $conn->prepare("INSERT INTO settings (name, value) VALUES ('notice_content', ?) ON DUPLICATE KEY UPDATE value = ?")->execute([$_POST['notice_content'], $_POST['notice_content']]);
@@ -55,20 +60,52 @@ if (isset($_POST['save_notice'])) {
     $conn->prepare("INSERT INTO settings (name, value) VALUES ('tg_bot_token', ?) ON DUPLICATE KEY UPDATE value = ?")->execute([$tg_token, $tg_token]);
     $conn->prepare("INSERT INTO settings (name, value) VALUES ('tg_chat_id', ?) ON DUPLICATE KEY UPDATE value = ?")->execute([$tg_id, $tg_id]);
 
-    $sys_msg = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 系统设置已更新</div>";
+    // 2. 触发测试通知
+    $test_feedback = "";
+    $toast_type = "success";
+    $icon = "check_circle";
+
+    if (!empty($tg_token) && !empty($tg_id)) {
+        $test_url = "https://api.telegram.org/bot{$tg_token}/sendMessage";
+        $test_msg = "🔔 *配置测试成功*\n\n您的后台管理系统已成功连接到此 Telegram 账号！";
+        $post_data = ['chat_id' => $tg_id, 'text' => $test_msg, 'parse_mode' => 'Markdown'];
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $test_url);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $post_data);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 5); 
+        $result = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($http_code == 200) {
+            $test_feedback = "且测试消息发送成功！";
+        } else {
+            $toast_type = "warning"; 
+            $icon = "warning"; 
+            $test_feedback = "但 TG 测试消息发送失败，请检查配置。";
+        }
+    }
+    
+    // 存入 Session 并跳转
+    $_SESSION['sys_msg'] = "<div class='toast {$toast_type}'><span class='material-symbols-outlined'>{$icon}</span> 设置已保存，{$test_feedback}</div>";
+    header("Location: " . $current_page); exit;
 }
 
 // C. 编辑/删除预约
 if (isset($_POST['update_appointment'])) {
     $book_time = $_POST['edit_date'] . " 09:00:00";
-    // 注意：这里的 edit_name 对应 "微信名"，edit_phone 对应 "微信号"
     $conn->prepare("UPDATE appointments SET name=?, phone=?, book_time=?, message=? WHERE id=?")
           ->execute([$_POST['edit_name'], $_POST['edit_phone'], $book_time, $_POST['edit_message'], $_POST['edit_id']]);
-    $sys_msg = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 预约信息已更新</div>";
+    $_SESSION['sys_msg'] = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 预约信息已更新</div>";
+    header("Location: " . $current_page); exit;
 }
+
 if (isset($_GET['del'])) {
     $conn->prepare("DELETE FROM appointments WHERE id = ?")->execute([(int)$_GET['del']]);
-    header("Location: index.php"); exit;
+    header("Location: " . $current_page); exit;
 }
 
 // D. 限额设置
@@ -76,17 +113,27 @@ if (isset($_POST['batch_update'])) {
     $days = date('t', strtotime($_POST['month'] . "-01"));
     $stmt = $conn->prepare("INSERT INTO daily_limits (date, max_num) VALUES (?, ?) ON DUPLICATE KEY UPDATE max_num = ?");
     for ($d=1; $d<=$days; $d++) $stmt->execute([$_POST['month'].'-'.str_pad($d,2,'0',STR_PAD_LEFT), $_POST['limit'], $_POST['limit']]);
-    $sys_msg = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 批量设置成功</div>";
+    $_SESSION['sys_msg'] = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 批量设置成功</div>";
+    header("Location: " . $current_page); exit;
 }
 if (isset($_POST['single_update_modal'])) {
     $conn->prepare("INSERT INTO daily_limits (date, max_num) VALUES (?, ?) ON DUPLICATE KEY UPDATE max_num = ?")
           ->execute([$_POST['modal_limit_date'], $_POST['modal_limit_num'], $_POST['modal_limit_num']]);
-    $sys_msg = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 限额已修改</div>";
+    $_SESSION['sys_msg'] = "<div class='toast success'><span class='material-symbols-outlined'>check_circle</span> 限额已修改</div>";
+    header("Location: " . $current_page); exit;
+}
+
+// 检查并提取 Session 消息
+$sys_msg = '';
+if (isset($_SESSION['sys_msg'])) {
+    $sys_msg = $_SESSION['sys_msg'];
+    unset($_SESSION['sys_msg']);
 }
 
 // ==================================================
-// 3. 数据读取
+// 3. 数据读取 (保持原样)
 // ==================================================
+$current_month = isset($_GET['month']) ? $_GET['month'] : date('Y-m');
 $admin_info = $conn->query("SELECT username FROM admins LIMIT 1")->fetch(PDO::FETCH_ASSOC);
 $current_username = $admin_info ? $admin_info['username'] : 'admin';
 
@@ -242,6 +289,7 @@ for ($d = 1; $d <= $days_in_month; $d++) {
             box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); animation: slideIn 0.3s;
         }
         .toast.success { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+        .toast.warning { background: #fffbeb; color: #92400e; border: 1px solid #fcd34d; }
         .toast.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
         @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
@@ -505,11 +553,11 @@ for ($d = 1; $d <= $days_in_month; $d++) {
         document.getElementById('limit_num_input').value = l; 
     }
     
-    // 自动消失提示
+    // 自动消失提示 (延长时间到 5 秒以便看完测试结果)
     setTimeout(() => {
         const toasts = document.querySelectorAll('.toast');
         toasts.forEach(t => t.style.display = 'none');
-    }, 3000);
+    }, 5000);
 </script>
 </body>
 </html>
